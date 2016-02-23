@@ -99,7 +99,7 @@ let common_name_to_string { asn = cert ; _ } =
    domain name portion of an identifier of type DNS-ID, SRV-ID, or
    URI-ID, as described under Section 6.4.1, Section 6.4.2, and
    Section 6.4.3. *)
-let hostnames { asn = cert ; _ } : string list =
+let hostnames_certificate (cert : certificate) : string list =
   let open Extension in
   match extn_subject_alt_name cert, subject_common_name cert with
     | Some (_, `Subject_alt_name names), _    ->
@@ -110,6 +110,9 @@ let hostnames { asn = cert ; _ } : string list =
               | _      -> None)
     | _                              , Some x -> [String.lowercase x]
     | _                              , _      -> []
+
+let hostnames { asn = cert ; _ } : string list =
+  hostnames_certificate cert
 
 (* we have foo.bar.com and want to split that into ["foo"; "bar"; "com"]
   forbidden: multiple dots "..", trailing dot "foo." *)
@@ -124,21 +127,24 @@ let o f g x = f (g x)
 
 type host = [ `Strict of string | `Wildcard of string ] with sexp
 
+let wildcard_matches_hostnames wildcard_hostname names =
 (* we limit our validation to a single '*' character at the beginning (left-most label)! *)
-let wildcard_matches host cert =
+(* TODO should the matching be done case-insensitive? *)
   let rec wildcard_hostname_matches hostname wildcard =
     match hostname, wildcard with
     | [_]  , []               -> true
     | x::xs, y::ys when x = y -> wildcard_hostname_matches xs ys
     | _    , _                -> false
   in
-  let names = hostnames cert in
-    match split_labels host with
+    match split_labels wildcard_hostname with
     | None      -> false
     | Some lbls ->
        List.map split_labels names |>
          List_ext.filter_map ~f:(function Some ("*"::xs) -> Some xs | _ -> None) |>
          List.exists (o (wildcard_hostname_matches (List.rev lbls)) List.rev)
+
+let wildcard_matches host cert =
+  wildcard_matches_hostnames host (hostnames cert)
 
 let supports_hostname cert = function
   | `Strict name   -> List.mem (String.lowercase name) (hostnames cert)
@@ -209,6 +215,52 @@ let validate_path_len pathlen { asn = cert ; _ } =
   | `V3, Some (_ , `Basic_constraints (true, Some n)) -> n >= pathlen
   | _                                                 -> false
 
+let validate_name_constraints trusted cert_names =
+  (* Attempts to implement https://tools.ietf.org/html/rfc5280#page-42 *)
+  let subtree_matches =
+    List.for_all
+    ( function
+      | `DNS ("" | "\x00" | "." | "\n") , _ , _ -> false
+          (* TODO not sure how these should be treated, but I feel like
+                  they should be rejected. opinions? *)
+
+          (* general_name , minimum , maximum (latter two ignored) *)
+      | `DNS general_name , _ , _
+          ->  wildcard_matches_hostnames general_name cert_names
+
+          (* TODO allow other types (ie `IP); not implemented: *)
+      | _ -> false (* fail verification *)
+    )
+  in begin match trusted with
+  | Some (_ , `Name_constraints ( [] , [] )) -> false
+      (* Conforming CAs MUST NOT issue certificates where name constraints
+       * is an empty sequence. That is, either the permittedSubtrees field
+       * or the excludedSubtrees MUST be present. *)
+
+  | Some (_ (*TODO what is this _ I'm ignoring here? criticality? *)
+      , `Name_constraints (permitted_subtrees , excluded_subtrees) )
+    -> not ( subtree_matches excluded_subtrees )
+       &&    subtree_matches permitted_subtrees
+
+       (* If trusted has no name constraints, we accept the cert: *)
+  | _ -> true
+  end
+
+let validate_name_constraints_certs (trusted : certificate) (cert : certificate) =
+  (* (from RFC 5280): Restrictions apply to the subject distinguished name and apply to
+   * subject alternative names.*)
+(*  begin match
+    extn_subject_alt_name cert.asn ,
+    hostnames cert (* TODO we should really only check distinguished_name ? *)
+  with
+  | Some (_ , `Subject_alt_name subject_alternative_name) , names
+    -> subject_alternative_name @ names
+  | None , names -> names
+  end |> *)
+  validate_name_constraints
+    (extn_name_constraints trusted)
+    (hostnames_certificate cert)
+
 let validate_ca_extensions ( cert : certificate ) =
   let open Extension in
   (* comments from RFC5280 *)
@@ -218,14 +270,14 @@ let validate_ca_extensions ( cert : certificate ) =
   (* extension as critical in such certificates *)
   (* unfortunately, there are 8 CA certs (including the one which
      signed google.com) which are _NOT_ marked as critical *)
-  ( match extn_basic_constr cert with
+  ( match extn_basic_constr cert.asn with
     | Some (_ , `Basic_constraints (true, _)) -> true
     | _                                       -> false ) &&
 
   (* 4.2.1.3 Key Usage *)
   (* Conforming CAs MUST include key usage extension *)
   (* CA Cert (cacert.org) does not *)
-  ( match extn_key_usage cert with
+  ( match extn_key_usage cert.asn with
     (* When present, conforming CAs SHOULD mark this extension as critical *)
     (* yeah, you wish... *)
     | Some (_, `Key_usage usage) -> List.mem `Key_cert_sign usage
@@ -244,14 +296,16 @@ let validate_ca_extensions ( cert : certificate ) =
      | _                              -> true ) &&
   *)
 
-  (* Name Constraints - name constraints should match servername *)
+  (* Name Constraints - name constraints should match servername
+   * https://tools.ietf.org/html/rfc5280#page-42 *)
+  (validate_name_constraints_certs cert.asn cert.asn) &&
 
   (* check criticality *)
   List.for_all (function
       | (true, `Key_usage _)         -> true
       | (true, `Basic_constraints _) -> true
       | (crit, _)                    -> not crit )
-    cert.tbs_cert.extensions
+    cert.asn.tbs_cert.extensions
 
 let validate_server_extensions { asn = cert ; _ } =
   let open Extension in
@@ -382,6 +436,7 @@ module Validation = struct
     | `ChainAuthorityKeyIdSubjectKeyIdMismatch of t * t
     | `ChainInvalidSignature of t * t
     | `ChainInvalidPathlen of t * int
+    | `ChainInvalidNameConstraints
 
     | `EmptyCertificateChain
     | `NoTrustAnchor of t
@@ -465,6 +520,7 @@ module Validation = struct
     | `ChainInvalidPathlen (c, pathlen) ->
        "invalid chain: the path length of " ^ common_name_to_string c ^
          " is smaller than the required path length " ^ string_of_int pathlen
+    | `ChainInvalidNameConstraints -> "invalid name constraints by sub-ca"
     | `EmptyCertificateChain -> "Certificate chain is empty"
     | `NoTrustAnchor c -> "No trust anchor found for " ^ common_name_to_string c
 
@@ -524,13 +580,15 @@ module Validation = struct
       issuer_matches_subject trusted cert,
       ext_authority_matches_subject trusted cert,
       validate_signature trusted cert,
-      validate_path_len pathlen trusted
+      validate_path_len pathlen trusted,
+      validate_name_constraints_certs trusted.asn cert.asn
     with
-    | (true, true, true, true) -> success
-    | (false, _, _, _)         -> fail (`ChainIssuerSubjectMismatch (trusted, cert))
-    | (_, false, _, _)         -> fail (`ChainAuthorityKeyIdSubjectKeyIdMismatch (trusted, cert))
-    | (_, _, false, _)         -> fail (`ChainInvalidSignature (trusted, cert))
-    | (_, _, _, false)         -> fail (`ChainInvalidPathlen (trusted, pathlen))
+    | (true, true, true, true, true) -> success
+    | (false, _, _, _, _)         -> fail (`ChainIssuerSubjectMismatch (trusted, cert))
+    | (_, false, _, _, _)         -> fail (`ChainAuthorityKeyIdSubjectKeyIdMismatch (trusted, cert))
+    | (_, _, false, _, _)         -> fail (`ChainInvalidSignature (trusted, cert))
+    | (_, _, _, false, _)         -> fail (`ChainInvalidPathlen (trusted, pathlen))
+    | (_, _, _, _, false)         -> fail (`ChainInvalidNameConstraints)
 
   let issuer trusted cert =
     List.filter (fun p -> issuer_matches_subject p cert) trusted

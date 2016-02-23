@@ -44,6 +44,8 @@ type priv_key_usage_period = [
   | `Not_before of Asn.Time.t
 ]
 
+(* https://tools.ietf.org/html/rfc5280#page-41
+ *   int * int option:           "minimum" * "optional maximum" *)
 type name_constraint = (general_name * int * int option) list
 
 type policy = [ `Any | `Something of Asn.OID.t ]
@@ -58,6 +60,7 @@ type t = [
   | `Ext_key_usage     of extended_key_usage list
   | `Basic_constraints of (bool * int option)
   | `Priv_key_period   of priv_key_usage_period
+                       (* Permitted subtrees * Excluded subtrees *)
   | `Name_constraints  of name_constraint * name_constraint
   | `Policies          of policy list
 ]

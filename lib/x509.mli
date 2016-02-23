@@ -318,7 +318,18 @@ with
  | Some (`Extensions x) -> x
  | None -> []
 ]}. *)
-  val sign : signing_request -> valid_from:Asn.Time.t -> valid_until:Asn.Time.t -> ?digest:Nocrypto.Hash.hash -> ?serial:Z.t -> ?extensions:(bool * Extension.t) list -> private_key -> distinguished_name -> t
+
+  type violated_name_constraint = (* TODO is there a nicer way to express this? *)
+  | Permitted of string
+  | Excluded of string
+
+  type sign_result =
+  | Certificate of t
+  | Invalid_signing_request of signing_request (* TODO clarify name? "invalid self-signature?"*)
+  | Violated_name_constraint of signing_request * violated_name_constraint
+  | Invalid_issuer_certificate of X509_certificate.t
+
+  val sign : signing_request -> valid_from:Asn.Time.t -> valid_until:Asn.Time.t -> ?digest:Nocrypto.Hash.hash -> ?serial:Z.t -> ?extensions:(bool * Extension.t) list -> X509_certificate.private_key -> Asn_grammars.certificate -> sign_result
 end
 
 (** X.509 Certificate Chain Validation. *)
@@ -392,6 +403,7 @@ module Validation : sig
     | `ChainAuthorityKeyIdSubjectKeyIdMismatch of t * t
     | `ChainInvalidSignature of t * t
     | `ChainInvalidPathlen of t * int
+    | `ChainInvalidNameConstraints
 
     | `EmptyCertificateChain
     | `NoTrustAnchor of t
