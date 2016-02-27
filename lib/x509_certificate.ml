@@ -270,14 +270,14 @@ let validate_ca_extensions ( cert : certificate ) =
   (* extension as critical in such certificates *)
   (* unfortunately, there are 8 CA certs (including the one which
      signed google.com) which are _NOT_ marked as critical *)
-  ( match extn_basic_constr cert.asn with
+  ( match extn_basic_constr cert with
     | Some (_ , `Basic_constraints (true, _)) -> true
     | _                                       -> false ) &&
 
   (* 4.2.1.3 Key Usage *)
   (* Conforming CAs MUST include key usage extension *)
   (* CA Cert (cacert.org) does not *)
-  ( match extn_key_usage cert.asn with
+  ( match extn_key_usage cert with
     (* When present, conforming CAs SHOULD mark this extension as critical *)
     (* yeah, you wish... *)
     | Some (_, `Key_usage usage) -> List.mem `Key_cert_sign usage
@@ -298,14 +298,14 @@ let validate_ca_extensions ( cert : certificate ) =
 
   (* Name Constraints - name constraints should match servername
    * https://tools.ietf.org/html/rfc5280#page-42 *)
-  (validate_name_constraints_certs cert.asn cert.asn) &&
+  (validate_name_constraints_certs cert cert) &&
 
   (* check criticality *)
   List.for_all (function
       | (true, `Key_usage _)         -> true
       | (true, `Basic_constraints _) -> true
       | (crit, _)                    -> not crit )
-    cert.asn.tbs_cert.extensions
+    cert.tbs_cert.extensions
 
 let validate_server_extensions { asn = cert ; _ } =
   let open Extension in

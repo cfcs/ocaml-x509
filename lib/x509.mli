@@ -327,7 +327,7 @@ with
   | Certificate of t
   | Invalid_signing_request of signing_request (* TODO clarify name? "invalid self-signature?"*)
   | Violated_name_constraint of signing_request * violated_name_constraint
-  | Invalid_issuer_certificate of X509_certificate.t
+  | Invalid_issuer_certificate of Asn_grammars.certificate
 
   val sign : signing_request -> valid_from:Asn.Time.t -> valid_until:Asn.Time.t -> ?digest:Nocrypto.Hash.hash -> ?serial:Z.t -> ?extensions:(bool * Extension.t) list -> X509_certificate.private_key -> Asn_grammars.certificate -> sign_result
 end

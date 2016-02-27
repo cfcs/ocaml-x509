@@ -54,7 +54,7 @@ type sign_result =
   | Certificate of t
   | Invalid_signing_request of signing_request (* TODO clarify name? "invalid self-signature?"*)
   | Violated_name_constraint of signing_request * violated_name_constraint
-  | Invalid_issuer_certificate of t
+  | Invalid_issuer_certificate of certificate
 
 let sign signing_request
     ~valid_from ~valid_until
@@ -105,13 +105,21 @@ let sign signing_request
     &&
     (extensions |> List.for_all
       ( function
+        | ( _ , `Name_constraints ([], _))
+        | ( _ , `Name_constraints ( _, []))
+          -> false
+          (* Implement: "Conforming CAs MUST NOT
+           * issue certificates where name constraints is an empty sequence.
+           * That  is, either the permittedSubtrees field or the excludedSubtrees
+           * MUST be present." *)
+
       | ( _ , `Name_constraints (permitted_subtrees, excluded_subtrees )) as subject_constraints ->
           (* verify that the subject names of signing_request is within
            * the subject's own name_constraints: *)
           validate_name_constraints (Some subject_constraints) subject_names
 
           (* TODO MUST verify that subject's name constraints are within issuer's name constraints *)
-      | _ ->  false
+      | _ -> true (* ignore extensions that are not `Name_constraints *)
      ))
   in
   if name_constraints_violated
