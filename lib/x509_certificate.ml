@@ -136,10 +136,10 @@ let wildcard_matches_hostnames wildcard_hostname names =
     | x::xs, y::ys when x = y -> wildcard_hostname_matches xs ys
     | _    , _                -> false
   in
-    match split_labels wildcard_hostname with
+    match split_labels String.(lowercase wildcard_hostname) with
     | None      -> false
     | Some lbls ->
-       List.map split_labels names |>
+       List.map split_labels List.(map String.lowercase names) |>
          List_ext.filter_map ~f:(function Some ("*"::xs) -> Some xs | _ -> None) |>
          List.exists (o (wildcard_hostname_matches (List.rev lbls)) List.rev)
 
